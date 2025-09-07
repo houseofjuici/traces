@@ -1,0 +1,88 @@
+# Xcode
+*.xcodeproj
+*.xcworkspace
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.orig
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+*.xcuserstate
+*.xcsettings
+
+# Swift Package Manager
+Package.pins
+Package.resolved
+.build/
+
+# Carthage
+Carthage/Checkouts
+Carthage/Build/
+
+# Accio dependency management
+.accio/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Playgrounds
+timeline.xcworkspace
+
+# User-specific
+*.moved-aside
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Backup files
+*.bak
+*.backup
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# ML Models (will be added separately)
+*.mlmodel
+*.mlmodelc
+
+# Markdown files (keeping source)
+*.md
+
+# OpenRouter API key
+*.env
+.env.local
+
+# Firebase config
+GoogleService-Info.plist
+
+# Build artifacts
+DerivedData/
+build/
+
+# Documentation
+docs/
+
+# Assets
+Assets.xcassets/
