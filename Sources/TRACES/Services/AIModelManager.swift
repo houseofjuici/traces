@@ -23,8 +23,11 @@ class AIModelManager: ObservableObject {
     @Published var loadingProgress: Double = 0.0
     @Published var isProcessing = false
     @Published var errorMessage: String?
+    @Published var currentAIModel = ""
+    @Published var useLocalModels = false
     
-    // MARK: - AI Models
+    // MARK: - AI Services
+    private let openRouterService = OpenRouterService.shared
     private var gemmaModel: MLModel?
     private var mobileVLMModel: MLModel?
     private var animateDiffModel: MLModel?
@@ -33,9 +36,28 @@ class AIModelManager: ObservableObject {
     // MARK: - Configuration
     private let modelLoadTimeout: TimeInterval = 30.0
     private let maxProcessingTime: TimeInterval = 45.0
+    private var cancellables = Set<AnyCancellable>()
     
     private init() {
         setupSpeechRecognition()
+        setupOpenRouter()
+    }
+    
+    private func setupOpenRouter() {
+        // Subscribe to OpenRouter service updates
+        openRouterService.$currentModel
+            .receive(on: RunLoop.main)
+            .sink { [weak self] model in
+                self?.currentAIModel = model
+            }
+            .store(in: &cancellables)
+        
+        openRouterService.$errorMessage
+            .receive(on: RunLoop.main)
+            .sink { [weak self] error in
+                self?.errorMessage = error
+            }
+            .store(in: &cancellables)
     }
     
     // MARK: - Model Loading
@@ -169,8 +191,10 @@ class AIModelManager: ObservableObject {
     }
     
     private func generateDecisionPaths(for decision: String) async throws -> [DecisionPath] {
+        // First try local Gemma model
         guard let gemmaModel = gemmaModel else {
-            throw AIModelError.modelNotLoaded("Gemma model not loaded")
+            // Fallback to OpenRouter if local model not available
+            return try await openRouterService.generateTimelinePaths(decision: decision)
         }
         
         let prompt = """
@@ -185,15 +209,21 @@ class AIModelManager: ObservableObject {
         Format as JSON array with keys: title, probability, outcomeDescription, emotionalIndicator
         """
         
-        let response = try await generateTextWithGemma(prompt: prompt)
-        
-        // Parse response into DecisionPath objects
-        guard let data = response.data(using: .utf8),
-              let paths = try? JSONDecoder().decode([DecisionPath].self, from: data) else {
-            throw AIModelError.responseParsingFailed("Failed to parse decision paths")
+        do {
+            let response = try await generateTextWithGemma(prompt: prompt)
+            
+            // Parse response into DecisionPath objects
+            guard let data = response.data(using: .utf8),
+                  let paths = try? JSONDecoder().decode([DecisionPath].self, from: data) else {
+                throw AIModelError.responseParsingFailed("Failed to parse decision paths")
+            }
+            
+            return paths
+        } catch {
+            // Fallback to OpenRouter if local model fails
+            print("Local model failed, falling back to OpenRouter: \(error)")
+            return try await openRouterService.generateTimelinePaths(decision: decision)
         }
-        
-        return paths
     }
     
     private func analyzeEmotionalTone(decision: String, paths: [DecisionPath]) async throws -> EmotionalTone {
@@ -227,7 +257,7 @@ class AIModelManager: ObservableObject {
     }
     
     private func generateTimelineTitle(decision: String, emotionalTone: EmotionalTone) async throws -> String {
-        // Generate a concise title based on the decision
+        // First try simple local generation
         let words = decision.components(separatedBy: .whitespacesAndNewlines)
         let keywords = words.filter { word in
             let length = word.count
@@ -238,9 +268,20 @@ class AIModelManager: ObservableObject {
                      emotionalTone == .challenging ? "Challenge of" : "Decision about"
         
         if let firstKeyword = keywords.first {
-            return "\(prefix) \(firstKeyword.capitalized)"
-        } else {
-            return "Life Decision"
+            let localTitle = "\(prefix) \(firstKeyword.capitalized)"
+            
+            // If local generation produces a good result, use it
+            if localTitle.count > 10 && localTitle.count < 50 {
+                return localTitle
+            }
+        }
+        
+        // Fallback to OpenRouter for better title generation
+        do {
+            return try await openRouterService.generateTimelineTitle(decision: decision, emotionalTone: emotionalTone)
+        } catch {
+            // If OpenRouter fails, return a simple fallback
+            return "Life Decision: \(decision.prefix(20))..."
         }
     }
     
@@ -314,8 +355,10 @@ class AIModelManager: ObservableObject {
     
     // MARK: - Wisdom Generation
     func generateWisdom(from timeline: Timeline) async throws -> WisdomItem {
+        // First try local Gemma model
         guard let gemmaModel = gemmaModel else {
-            throw AIModelError.modelNotLoaded("Gemma model not loaded")
+            // Fallback to OpenRouter if local model not available
+            return try await openRouterService.generateWisdom(from: timeline)
         }
         
         let prompt = """
@@ -333,24 +376,30 @@ class AIModelManager: ObservableObject {
         Format as JSON with keys: title, description, category
         """
         
-        let response = try await generateTextWithGemma(prompt: prompt)
-        
-        // Parse response
-        guard let data = response.data(using: .utf8),
-              let wisdom = try? JSONDecoder().decode(WisdomResponse.self, from: data) else {
-            throw AIModelError.responseParsingFailed("Failed to parse wisdom response")
+        do {
+            let response = try await generateTextWithGemma(prompt: prompt)
+            
+            // Parse response
+            guard let data = response.data(using: .utf8),
+                  let wisdom = try? JSONDecoder().decode(WisdomResponse.self, from: data) else {
+                throw AIModelError.responseParsingFailed("Failed to parse wisdom response")
+            }
+            
+            return WisdomItem(
+                id: UUID().uuidString,
+                title: wisdom.title,
+                description: wisdom.description,
+                price: 15, // Default price
+                category: wisdom.category,
+                author: "TRACES AI",
+                rating: 0.0,
+                purchaseCount: 0
+            )
+        } catch {
+            // Fallback to OpenRouter if local model fails
+            print("Local wisdom generation failed, falling back to OpenRouter: \(error)")
+            return try await openRouterService.generateWisdom(from: timeline)
         }
-        
-        return WisdomItem(
-            id: UUID().uuidString,
-            title: wisdom.title,
-            description: wisdom.description,
-            price: 15, // Default price
-            category: wisdom.category,
-            author: "TRACES AI",
-            rating: 0.0,
-            purchaseCount: 0
-        )
     }
     
     // MARK: - Speech Recognition
@@ -406,8 +455,10 @@ class AIModelManager: ObservableObject {
     
     // MARK: - AR Content Generation
     func generateARContent(for location: CLLocationCoordinate2D) async throws -> ARContent {
+        // First try local Gemma model
         guard let gemmaModel = gemmaModel else {
-            throw AIModelError.modelNotLoaded("Gemma model not loaded")
+            // Fallback to OpenRouter if local model not available
+            return try await openRouterService.generateARContent(for: location)
         }
         
         let prompt = """
@@ -421,18 +472,43 @@ class AIModelManager: ObservableObject {
         Format as JSON with keys: quote, question, visualization
         """
         
-        let response = try await generateTextWithGemma(prompt: prompt)
-        
-        guard let data = response.data(using: .utf8),
-              let content = try? JSONDecoder().decode(ARContentResponse.self, from: data) else {
-            throw AIModelError.responseParsingFailed("Failed to parse AR content response")
+        do {
+            let response = try await generateTextWithGemma(prompt: prompt)
+            
+            guard let data = response.data(using: .utf8),
+                  let content = try? JSONDecoder().decode(ARContentResponse.self, from: data) else {
+                throw AIModelError.responseParsingFailed("Failed to parse AR content response")
+            }
+            
+            return ARContent(
+                quote: content.quote,
+                question: content.question,
+                visualization: content.visualization
+            )
+        } catch {
+            // Fallback to OpenRouter if local model fails
+            print("Local AR content generation failed, falling back to OpenRouter: \(error)")
+            return try await openRouterService.generateARContent(for: location)
         }
-        
-        return ARContent(
-            quote: content.quote,
-            question: content.question,
-            visualization: content.visualization
-        )
+    }
+    
+    // MARK: - Psychology Facts Generation
+    func generatePsychologyFact() async throws -> String {
+        // Use OpenRouter for psychology facts (no local equivalent)
+        return try await openRouterService.generatePsychologyFact()
+    }
+    
+    // MARK: - Model Management
+    func getCurrentModel() -> String {
+        return currentAIModel
+    }
+    
+    func getAvailableModels() -> [String] {
+        return openRouterService.getAvailableModels()
+    }
+    
+    func resetRateLimiting() {
+        openRouterService.resetRateLimiting()
     }
 }
 
